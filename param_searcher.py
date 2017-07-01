@@ -38,15 +38,23 @@ def get_params():
     args['init var'] = np.random.choice(['xav in', 'sqrt in', 'glorot'], num_layers).tolist()
 
     args['base normalization'] = np.random.choice(['meansum']).tolist()
-    if args['base normalization'] in ['meansum']:
-        args['normalization power'] = np.random.choice(['none','1 abs', '2', '0.5']).tolist()
-        args['normalization scaling'] = np.random.choice(['1 sum','1/n mean', \
-             '1e-1', '1e-2', '1e-3', '1e-4', '1e1', '3e2',
-             '1 / 10 grad size',     '1 / 100 grad size',     '1 / 1000 grad size',
-             '1 / 10 grad size^2',   '1 / 100 grad size^2',   '1 / 1000 grad size^2',
-             '1 / 10 grad size^0.5', '1 / 100 grad size^0.5', '1 / 1000 grad size^0.5',
-             '1/ 10 log grad size', '1/ 100 log grad size', '1/ 1000 log grad size'
-                ]).tolist()
+    X = True
+    while X:
+        args['normalization beta: powers'] = np.random.choice(\
+                ['log','1','abs','2','0.5','max','logsumexp'], 3).tolist()
+        for a in args['normalization beta: powers']:
+            if X and not a=='1': X = False
+
+    args['normalization alpha: scaling'] = np.random.choice([\
+            np.random.choice(['1','1e-1','1e-2','1e-3','1e-4',\
+            '3e-6','1e1','3e2']),
+            '1 / '+str(np.random.choice([0.01,0.1,1,10,100,1000])) +\
+            ' ' + np.random.choice(['grad size', 'grad size^2', \
+            'sqrt grad size', 'log grad size'])], p=[0.3,0.7])
+
+    # This normalization keeps the norm of the gradient at least a value c.
+    args['normalization gamma: threshold'] = np.random.choice(\
+                [0.1**i for i in np.arange(-1, 5, 0.5)])
 
 
     print("Parameters:")

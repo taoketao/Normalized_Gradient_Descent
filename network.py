@@ -47,7 +47,7 @@ layer_sizes.append(n_classes)
 print(layer_sizes)
 
 opt = args['opt']
-if not args['base normalization']=='meansum':
+if not args['base normalization'] in ['meansum','thresh']:
     raise Exception("NotImplemented")
 
 # tf Graph input
@@ -58,7 +58,7 @@ y = tf.placeholder("float", [None, n_classes])
 # Create model
 def multilayer_perceptron(x, weights, biases):
     layer = x
-    for lyr_id in range(num_layers):
+    for lyr_id in range(len(weights)):
         layer = tf.add(tf.matmul(x, weights['h1']), biases['b1'])
         layer = tf.contrib.layers.batch_norm(layer)
         if lyr_id==num_layers-1:
@@ -67,15 +67,18 @@ def multilayer_perceptron(x, weights, biases):
             layer = tf.nn.relu(layer)
     return layer
 
-# Store layers weight & bias
 layer_vars = []
 layer_shapes = []
 weights = {}
 biases = {}
+# Initialize random weights
 for lyr_id in range(num_layers):
-    shape = [layer_sizes[lyr_id], layer_sizes[lyr_id+1]]
-    layer_shapes.append(shape)
     lastlayer = True if lyr_id==num_layers-1 else False
+    if lastlayer:
+        shape = [layer_sizes[lyr_id], n_classes]
+    else:
+        shape = [layer_sizes[lyr_id], layer_sizes[lyr_id+1]]
+    layer_shapes.append(shape)
     i = 1.0 if lastlayer else 2.0 # relu: kill half
     if args['init var'][lyr_id]=='xav in':
         var_fctr = i/shape[0] 
@@ -85,47 +88,25 @@ for lyr_id in range(num_layers):
         var_fctr = 1/np.sqrt(i*np.prod(shape))
     layer_vars.append(var_fctr)
 
-    if init_type=='unif':
-        pass # calculate, given variance, what the bound should be
+    var_fctr *= args['weights scales'][lyr_id]
 
-    ; # multiply variance bound by normalization scaling factor
-    ; # shift variance bound to min=0 if RELU
-    
-    if lastlayer:
-        weights['out'] = variable
-    else:
-        weights['h'+str(lyr_id+1)] = variable
+    if args['init type'][lyr_id]=='unif':
+        r = np.sqrt(12 * var_fctr)
+        if lastlayer: 
+            variable = tf.Variable(tf.random_uniform(shape, -r*0.25, 1.75*r))
+        else:
+            variable = tf.Variable(tf.random_uniform(shape, -r, r))
+    if args['init type'][lyr_id]=='trunc normal':
+        if lastlayer:
+            variable = tf.Variable(tf.random_normal(shape, 0, var_fctr))
+        else:
+            variable = tf.Variable(tf.random_normal(shape, var_fctr, var_fctr))
 
-print(layer_shapes, layer_vars)
-sys.exit()
-
-
-h1_sh = [n_input, n_hidden_1]
-h1_var = 2*float(np.prod(h1_sh))**-0.5
-fctrs.append(h1_var)
-if num_layers>1:
-    h2_sh = [n_hidden_1, n_hidden_2]
-    h2_var = 2*float(np.prod(h2_sh))**-0.5
-    fctrs.append(h2_var)
-if num_layers>2:
-    h3_sh = [n_hidden_2, n_hidden_3]
-    h3_var = 2*float(np.prod(h2_sh))**-0.5
-    fctrs.append(h3_var)
-
-#outsh = [n_hidden_2, n_classes];    outftr = 2*float(np.prod(outsh))**-0.5
-weights = {
-    #'h1': tf.Variable(tf.random_normal([n_input, n_hidden_1])),
-    #'h1': tf.Variable(tf.random_normal(h1_sh, h1_ftr)),
-    'h1': tf.Variable(tf.random_uniform(h1_sh, minval=-h1_ftr, maxval=h1_ftr)),
-    'h2': tf.Variable(tf.random_uniform(h2_sh, minval=-h2_ftr, maxval=h2_ftr)),
-    'out': tf.Variable(tf.random_normal([n_hidden_2, n_classes]))
-}
-biases = {
-    'b1': tf.Variable(tf.random_normal([n_hidden_1])),
-    'b2': tf.Variable(tf.random_normal([n_hidden_2])),
-    'out': tf.Variable(tf.random_normal([n_classes]))
-}
-
+    weights['out' if lastlayer else 'h'+str(lyr_id+1)] = variable
+    k = 'out' if lastlayer else 'b'+str(lyr_id+1)
+    biases [k] = \
+            tf.Variable(tf.random_normal(shape[1:2], var_fctr))
+    print(variable.shape, biases[k].shape)
 # Construct model
 pred = multilayer_perceptron(x, weights, biases)
 
@@ -139,8 +120,49 @@ elif opt=='adam':
 
 grads = optimizer.compute_gradients(cost, gate_gradients=2)
 #nrm = tf.abs(tf.reduce_sum([tf.reduce_sum(gr[1]) for gr in grads]))
-nrm = tf.pow(tf.abs(tf.reduce_sum([tf.reduce_sum(gr[1]) for gr in grads])), 0.5)
-nrm_grads = [(tf.divide(grad, nrm),var) for grad, var in grads]
+#if args['base normalization']=='thresh':
+#    abssum = tf.abs(tf.reduce_sum([tf.reduce_sum(gr[1]) for gr in grads]))
+#    # Multiply by normalizer nrm.
+#    nrm = { 'sum num weights': (abssum)**-1 / tf.maximum(abssum, \
+#                    np.sum(np.sum(s) for s in layer_shapes)),
+#            'sqrt prod num weights': tf.maximum(np.sqrt(np.prod(s[0]*s[1] \
+#                    for s in layer_shapes), abssum))/abssum,
+#            '0.1':      tf.maximum(1e-1, abssum)/abssum,
+#            '0.01':     tf.maximum(1e-2, abssum)/abssum , 
+#            '0.001':    tf.maximum(1e-3, abssum)/abssum ,
+#            '0.0001':   tf.maximum(1e-4, abssum)/abssum \
+#        }[args['normalization minimum gradient magnitude']]
+if not args['base normalization']=='meansum': raise Exception("Not yet impl")
+
+G_ = [gr[1] for gr in grads]
+f_in, f_lyr, f_out = [lambda x: {'2': tf.square(x),  'abs': tf.abs(x),\
+        '1': x,  'log': tf.log(tf.abs(x)),  '0.5': tf.sqrt(tf.abs(x)),\
+        'max':  tf.reduce_max(x),  'logsumexp': tf.reduce_logsumexp(x) }[n] \
+        for n in args['normalization beta: powers']]
+
+virtual_gradsize = f_out(tf.reduce_sum([f_lyr(tf.reduce_sum(f_in(g))) for g in G_]))
+
+normscale=args['normalization alpha: scaling']
+if not normscale[:4]=='1 / ':
+    normalizer = {'1':1.0, '1e-1':1e-1, '1e-2':1e-2, '1e-3':1e-3,\
+            '1e-4':1e-4, '3e-6':3e-6, '1e1':1e1, '3e2':3e2}[normscale] 
+else:
+    if '^2' in normscale: vgs = lambda y: tf.square(y)
+    elif 'sqrt' in normscale: vgs = lambda y: tf.sqrt(y)
+    elif 'log' in normscale: vgs = lambda y: tf.log(y)
+    else: vgs = lambda y: y
+
+    const_scaling = float(normscale.split(' ')[2])
+    normalizer =  1.0 / (const_scaling * vgs(virtual_gradsize))
+
+
+thresholded_norm = tf.reduce_max(tf.constant(args\
+        ['normalization gamma: threshold']), normalizer) / normalizer
+
+nrm_grads = [(tf.multiply(thresholded_norm, grad),var) for grad, var in grads]
+
+
+#normalized_grads 
 updates = optimizer.apply_gradients(nrm_grads)
 
 
